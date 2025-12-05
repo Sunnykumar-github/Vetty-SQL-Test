@@ -1,0 +1,132 @@
+Q1. What is the count of purchases per month (excluding refunded purchases)?
+
+Approach: To ensure months with zero valid purchases (but existing refund activity) are still reported, I used conditional aggregation (SUM(CASE...)) instead of a WHERE clause. This sums 1 for valid purchases and 0 for refunds, grouping by the month extracted from the purchase timestamp.
+
+SQL:
+SELECT 
+    DATE_FORMAT(purchase_time, '%Y-%m') AS purchase_month,
+    -- If refund_time is NULL, count it as 1, otherwise 0
+    SUM(CASE WHEN refund_time IS NULL THEN 1 ELSE 0 END) AS purchase_count
+FROM transactions
+GROUP BY 1
+ORDER BY 1;
+
+Q2. How many stores receive at least 5 orders/transactions in October 2020?
+
+Approach: I filtered the transactions for the range of October 2020 using a WHERE clause. Then, I grouped by store_id and used the HAVING clause to filter for groups with a count of 5 or more. Finally, I counted the number of resulting stores.
+
+SQL:
+SELECT COUNT(*) AS store_count
+FROM (
+    SELECT store_id
+    FROM transactions
+    WHERE purchase_time >= '2020-10-01 00:00:00' 
+      AND purchase_time <= '2020-10-31 23:59:59'
+    GROUP BY store_id
+    HAVING COUNT(*) >= 5
+) AS qualifying_stores;
+
+Q3. For each store, what is the shortest interval (in min) from purchase to refund time?
+
+Approach: I filtered for transactions where a refund_time exists. I then calculated the time difference in minutes between purchase and refund for each row and selected the minimum value (MIN) for each store using GROUP BY.
+
+SQL:
+SELECT 
+    store_id,
+    MIN(TIMESTAMPDIFF(MINUTE, purchase_time, refund_time)) AS shortest_interval_min
+FROM transactions
+WHERE refund_time IS NOT NULL
+GROUP BY store_id;
+
+Q4. What is the gross_transaction_value of every store's first order?
+
+Approach: I used the window function ROW_NUMBER() partitioned by store_id and ordered by purchase_time ASC to assign a rank to every order. I then wrapped this in a CTE (or subquery) and filtered for rows where the rank is 1.
+
+SQL:
+WITH StoreFirstOrders AS (
+    SELECT 
+        store_id, 
+        gross_transaction_value,
+        ROW_NUMBER() OVER (PARTITION BY store_id ORDER BY purchase_time ASC) as rn
+    FROM transactions
+)
+SELECT 
+    store_id, 
+    gross_transaction_value
+FROM StoreFirstOrders
+WHERE rn = 1;
+
+Q5. What is the most popular item name that buyers order on their first purchase?
+
+Approach: First, I identified every buyer's first purchase using ROW_NUMBER() partitioned by buyer_id. I then joined this result with the items table to retrieve item_name. Finally, I grouped by the item name, counted the occurrences, and ordered by descending count to find the most popular one.
+
+SQL:
+WITH BuyerFirstPurchases AS (
+    SELECT 
+        item_id, 
+        store_id
+    FROM (
+        SELECT 
+            item_id, 
+            store_id,
+            ROW_NUMBER() OVER (PARTITION BY buyer_id ORDER BY purchase_time ASC) as rn
+        FROM transactions
+    ) t
+    WHERE rn = 1
+)
+SELECT 
+    i.item_name, 
+    COUNT(*) as order_count
+FROM BuyerFirstPurchases bfp
+JOIN items i ON bfp.item_id = i.item_id AND bfp.store_id = i.store_id
+GROUP BY i.item_name
+ORDER BY order_count DESC
+LIMIT 1;
+
+Q6. Create a flag in the transaction items table indicating whether the refund can be processed or not.
+
+Approach: I used a CASE statement to evaluate two conditions: 1) the refund_time must not be null, and 2) the time difference between purchase and refund must be less than or equal to 72 hours. If both are true, the flag is set to 'Processed'; otherwise, 'Not Processed'.
+
+SQL:
+SELECT 
+    buyer_id,
+    purchase_time,
+    refund_time,
+    CASE 
+        WHEN refund_time IS NOT NULL 
+             AND TIMESTAMPDIFF(HOUR, purchase_time, refund_time) <= 72 
+        THEN 'Processed'
+        ELSE 'Not Processed'
+    END AS refund_process_flag
+FROM transactions;
+
+Q7. Create a rank by buyer_id column in the transaction items table and filter for only the second purchase per buyer.
+
+Approach: I used the RANK() window function partitioned by buyer_id and ordered by purchase_time to assign a chronological rank to all transactions. I wrapped this in a subquery and filtered for purchase_rank = 2.
+
+SQL:
+SELECT *
+FROM (
+    SELECT 
+        *,
+        RANK() OVER (PARTITION BY buyer_id ORDER BY purchase_time ASC) as purchase_rank
+    FROM transactions
+) ranked
+WHERE purchase_rank = 2;
+
+Q8. How will you find the second transaction time per buyer (don't use min/max)?
+
+Approach: To avoid MIN/MAX, I used the ROW_NUMBER() window function. This function assigns a sequential integer to rows within a partition (buyer), allowing me to specifically target the row where rn = 2 to get the second transaction time.
+
+SQL:
+SELECT 
+    buyer_id,
+    purchase_time
+FROM (
+    SELECT 
+        buyer_id,
+        purchase_time,
+        ROW_NUMBER() OVER (PARTITION BY buyer_id ORDER BY purchase_time ASC) as rn
+    FROM transactions
+) t
+WHERE rn = 2;
